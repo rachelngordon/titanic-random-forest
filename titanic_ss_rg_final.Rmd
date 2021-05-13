@@ -1,0 +1,309 @@
+---
+title: "Titanic Project"
+author: "Rachel Gordon + Sam Sendelbach"
+date: "4/30/2021"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction 
+
+The Titanic is one of the most infamous shipwrecks in history. Famed as "unsinkable", the titanic took an unfortunate twist towards irony when it sank on April 15, 1912. 1502 out of 2224 passengers and crew died. The goal of this research project is to predict whether a passenger or crew member would survive based on their respective characteristics. We attempted feature engineering (deriving new features from the dataset) which was specifically successful for formal title (mr/ms/etc.). After finalizing our dataset for training and testing we employed cross validation to find the best parameters for our random forest model.
+
+# Data
+
+The dataset is composed of two CSV files split by training and testing sets. The training set has 891 observations and the test set 418 observations. The classes in the training set are not perfectly balanced but given the scope of this project we deemed it suitable for training. The most prevalent aspect of the data was the missingness, most notably in the age category. Since it is likely that children were prioritized we decided to address the missingness using the MICE method. 
+
+# Methods
+
+To address the missing age and fare data we employed MICE using a CART model to fill in the missing data based on other features. The completion was run over 5 iterations to sufficiently converge the imputed data. We combined the data for training and testing sets to increase the sample size (and performance) of the CART model.
+
+We then went through the feature engineering process to derive variables that may be useful in predicting survival based on the data we were given. The most important feature that we extracted was that of the title of the individual. Given that the title indicates gender, status, and age, we figured that this feature would be useful. We first started with each title having a distinct level for a total of ten. However, we found that limiting the categories to Mr, Mrs, Miss, Master, and Other provided more accurate results. We also decided to derive the total family size for the passenger by adding the number of siblings, parents, and children on board. We figured that larger families composed of children may have a higher chance of survival. We also tried to derive the passenger's age group and the deck they were staying in, but these did not end up being useful for our final model.
+
+Next, the modeling process was relatively straight forward. We applied a random forest model. Instead of trying to find the optimal mtry parameter by hand, we opted to use cross validation on the training set to find the highest performing parameter. The resulting model was then checked against kaggle to find the test score. Through iteration we found that dropping some of our least important variables like: "AgeGrp","SibSp", "Name", "Parch" helped to improve our kaggle scores. Unfortunately we did end up dropping one of our derived variables (ageGrp).
+
+# Results
+
+For our final model we ended up with a random forest using the variables Sex, Pclass, Title, Fare, FamSize, Ticket, Cabin, Age, and Embarked. Variable importance shows us that Sex and Title are very important followed by the fare and pclass variables which may be a proxy for wealth. It is likely that first class passengers had a higher chance of survival. The highest accuracy our model achieved through cross validation was 0.80692. We then used this model to predict survival of the passengers in the test set and submitted these predictions to Kaggle, which gave us a final score of 0.77751.
+
+# Conclusions and Future Work
+
+Through this analysis we were able to obtain a model with 77% accuracy using variables such as Title, Sex, Fare, Pclass, Family Size, and others in a random forest model. While using a tree model was fun, it would be great to test out neural networks on this dataset to try and improve our accuracy (especially given that the top submissions use neural networks). Given more time, we would also like to explore more nuanced feature engineering such as if a passenger is married, ticket frequency, or other options. 
+
+# Appendix
+
+## Setup
+```{r}
+library(tree)
+library(randomForest)
+library(VIM)
+library(caret)
+library(e1071)
+library(stringr)
+library(mice)
+
+set.seed(0)
+```
+
+## Data Loading
+```{r}
+train <- read.csv("train.csv")
+test <- read.csv("test.csv")
+train$Survived <- as.factor(train$Survived)
+head(train)
+head(test)
+```
+
+
+## Data Exploration
+
+### Summary
+
+```{r}
+summary(train)
+```
+
+### Checking Uniques
+
+```{r}
+# check that every entry is indeed unique
+print(length(unique(train$PassengerId)))
+print(length(train$PassengerId))
+```
+
+
+### Checking Missingness
+
+```{r}
+na_count_train <- sapply(train, function(y) sum(length(which(is.na(y)))))
+na_count_train <- data.frame(na_count_train)
+print(na_count_train)
+# visualize missing data
+aggr(train)
+matrixplot(train[order(train$Survived),])
+```
+
+
+```{r}
+na_count_test <- sapply(test, function(y) sum(length(which(is.na(y)))))
+na_count_test <- data.frame(na_count_test)
+print(na_count_test)
+# visualize missing data
+aggr(test)
+```
+
+```{r}
+# plot survival frequency
+survival <- table(train$Survived)
+barplot(survival, xlab = "Frequency", ylab = "Survival (1 = Yes, 0 = No)", main = "Survival", 
+        col = "cornflowerblue", border = NA, horiz = TRUE)
+```
+
+## Imputation
+
+```{r}
+# perform multiple imputations on missing data
+
+nrow(train)
+nrow(test)
+combined_imp <- rbind(train[, -c(2)], test)
+
+
+
+m = 5
+age <- mice(combined_imp, m = m, method = "cart")
+# pull out a more complete data set
+combined_imp <- list()
+for (i in 1:m){
+  combined_imp[[i]] <- complete(age,i)
+}
+
+combined_imp <- data.frame(combined_imp[5])
+```
+
+```{r}
+
+combined_imp$Sex <- as.factor(combined_imp$Sex)
+
+
+train_complete <- combined_imp[1:891,] 
+test_complete <- combined_imp[892:1309,]
+
+train_complete$Survived <- train$Survived
+
+
+```
+
+
+## Feature extraction 
+
+```{r}
+# family size
+train_complete$FamSize <- (train_complete$SibSp + train_complete$Parch + 1)
+test_complete$FamSize <- (test_complete$SibSp + test_complete$Parch + 1)
+
+```
+
+
+```{r}
+# title
+train_complete$Title <- str_extract(train_complete$Name, "(Mr.|Ms.|Dr.|Sr.|Mrs.|Miss.|Master.|Don.|Rev.|Major.|Col.|Capt.)")
+# replace NAs in title column
+train_complete[is.na(train_complete)] <- "None"
+
+train_complete[train_complete=="Mr."] <- 0
+train_complete[train_complete=="Mr "] <- 0
+train_complete[train_complete=="Mr"] <- 0
+train_complete[train_complete=="Mrs"] <- 1
+train_complete[train_complete=="Miss."] <- 1
+train_complete[train_complete=="Ms."] <- 1
+train_complete[train_complete=="Master."] <- 2
+train_complete[train_complete=="Don."] <- 3
+train_complete[train_complete=="Col."] <- 3
+train_complete[train_complete=="Rev."] <- 3
+train_complete[train_complete=="Dr."] <- 3
+train_complete[train_complete=="Major."] <- 3
+train_complete[train_complete=="Capt."] <- 3
+train_complete[train_complete=="None"] <- 3
+train_complete[train_complete=="Dono"] <- 3
+train_complete[train_complete=="Dona"] <- 3
+train_complete[train_complete=="Colb"] <- 3
+train_complete[train_complete=="Dre"] <- 3
+train_complete[train_complete=="Dri"] <- 3
+train_complete[train_complete=="Dra"] <- 3
+train_complete[train_complete=="Coll"] <- 3
+train_complete[train_complete=="Cole"] <- 3
+
+train_complete$Title <- as.factor(train_complete$Title)
+
+test_complete$Title <- str_extract(test_complete$Name, "(Mr.|Ms.|Dr.|Sr.|Mrs.|Miss.|Master.|Don.|Rev.|Major.|Col.|Capt.)")
+# replace NAs in title column
+test_complete[is.na(test_complete)] <- "None"
+
+test_complete[test_complete=="Mr."] <- 0
+test_complete[test_complete=="Mr"] <- 0
+test_complete[test_complete=="Mrs"] <- 1
+test_complete[test_complete=="Miss."] <- 1
+test_complete[test_complete=="Ms."] <- 1
+test_complete[test_complete=="Master."] <- 2
+test_complete[test_complete=="Don."] <- 3
+test_complete[test_complete=="Col."] <- 3
+test_complete[test_complete=="Rev."] <- 3
+test_complete[test_complete=="Dr."] <- 3
+test_complete[test_complete=="Major."] <- 3
+test_complete[test_complete=="Capt."] <- 3
+test_complete[test_complete=="None"] <- 3
+test_complete[test_complete=="Dono"] <- 3
+test_complete[test_complete=="Dona"] <- 3
+test_complete[test_complete=="Colb"] <- 3
+test_complete[test_complete=="Dre"] <- 3
+test_complete[test_complete=="Dri"] <- 3
+test_complete[test_complete=="Dra"] <- 3
+test_complete[test_complete=="Coll"] <- 3
+test_complete[test_complete=="Cole"] <- 3
+
+test_complete$Title <- as.factor(test_complete$Title)
+
+```
+
+```{r}
+summary(train_complete)
+summary(test_complete)
+
+
+```
+
+
+## Modeling
+
+```{r}
+table(is.na(train_complete))
+table(is.na(test_complete))
+```
+
+
+```{r}
+head(train_complete)
+head(train_complete[, -c(1,12)])
+```
+
+```{r}
+drop <- c("AgeGrp","SibSp", "Name", "Parch")
+train_complete = train_complete[,!(names(train_complete) %in% drop)]
+test_complete = test_complete[,!(names(test_complete) %in% drop)]
+head(train_complete[, -c(1,9)])
+
+```
+
+
+```{r}
+# use k-fold cross validation
+
+repeatedCV <- trainControl(method="cv", number=5)
+
+
+
+
+rf_grid <- expand.grid(mtry = seq(from = 2, to = ncol(train_complete[, -c(1,9)]) - 1, by = 1))
+
+rf_model_2 <- train(x = train_complete[, -c(1,9)],
+                    y = train_complete$Survived,
+                    method = "rf", 
+                    trControl = repeatedCV, 
+                    importance = TRUE, 
+                    tuneGrid = rf_grid)
+
+
+
+
+
+```
+
+
+```{r}
+rf_model_2
+
+paste("The maximum accuracy was", round(max(rf_model_2$results$Accuracy), 5))
+
+```
+
+```{r}
+varImp(rf_model_2)
+```
+
+
+
+## Prediction
+
+```{r}
+nrow(test_complete)
+```
+```{r}
+res <- predict(rf_model_2, test_complete)
+
+res <- data.frame(res)
+
+final_sub <- data.frame(cbind(test_complete$PassengerId, res))
+
+head(final_sub)
+
+
+colnames(final_sub) <- c("PassengerId", "Survived")
+head(final_sub)
+
+
+
+write.csv(final_sub, "submission.csv", row.names = F)
+
+
+
+```
+
+
